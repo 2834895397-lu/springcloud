@@ -6,7 +6,7 @@
 
 ![image-20210208080648873](img/image-20210208080648873.png)
 
-学习知识点总线:
+## 学习知识点总线:
 
 ![image-20210208082218025](img/image-20210208082218025.png)
 
@@ -70,7 +70,7 @@
 将公共的类抽取出来供其他模块使用
 
 1. 新建一个模块专门用来存放公共的类
-2. 在这个模块中的maven先clean再install进本地仓库
+2. **==在这个模块中的maven先clean再install进本地仓库(如果报这个依赖的错, 那就install跟模块进去)==**
 3. 在其他模块中的pom使用(dependency中写公共模块的gav)
 
 例如:
@@ -652,6 +652,8 @@ public class OrderConsulController {
 
 ![image-20210209140527511](img/image-20210209140527511.png)
 
+## 服务调用
+
 ### ribbon
 
 是一套客户端的负载均衡工具
@@ -690,10 +692,580 @@ ribbon默认自带的负载均衡规则由以下其中:
 6. ==**com.netflix.loadbalancer.AvailabilityFilteringRule: 先过滤掉实例故障, 再选择并发较小的实例**==
 7. ==**com.netflix.loadbalancer.ZoneAvoidanceRule: 符合判断server所在区域的性能和server的可用性选择服务器**==
 
-
+### LoadBalance
 
 #### 如何更换负载均衡规则
 
+![image-20210210122329254](img/image-20210210122329254.png)
+
 1. **往容器中添加响应的配置类**, 但是这个自定义的配置类**==不能放在@ComponentScan所扫描的当前包下以及子包下==**, 否则我们自定义的这个配置类就会被所有的Ribbon客户端所共享, 达不到特殊化定制的目了.
-2. 
+2. 在消费者主启动类上添加注解@RibbonClient
+
+```java
+/**
+ * @Author jacklu
+ * @Date 11:13:53 2021/02/10
+ */
+@Configuration
+public class MySelfRule {
+    @Bean
+    public IRule myRule(){
+        //定义Ribbon的负载均衡规则为随机
+        return new RandomRule();
+    }
+}
+```
+
+```java
+/**
+ * @Author jacklu
+ * @Date 13:03:04 2021/02/08
+ */
+@SpringBootApplication
+@EnableEurekaClient
+//指定使用Ribbon客户端来对CLOUD-PAYMENT-SERVICE应用进行负载均衡, 负载均衡的自定义配置在MyySelfRule这个类中
+//不指定配置类则使用默认的负载均衡机制(轮询)
+@RibbonClient(name = "CLOUD-PAYMENT-SERVICE",configuration = MySelfRule.class)
+public class OrderMain80 {
+    public static void main(String[] args) {
+        SpringApplication.run(OrderMain80.class, args);
+    }
+}
+```
+
+
+
+#### 负载均衡算法原理:
+
+![image-20210210121510759](img/image-20210210121510759.png)
+
+
+
+#### 自己手动写一个负载均衡
+
+1. 定义接口, 根据某个应用下的所有服务实例返回具体的服务实例
+
+```java
+
+/**
+ * @Author jacklu
+ * @Date 12:40:33 2021/02/10
+ */
+public interface LoadBalancer {
+    /**
+     *
+     * @param serviceInstances 某个应用下的所有服务实例
+     * @return 具体的服务实例
+     */
+    ServiceInstance instance(List<ServiceInstance> serviceInstances);
+}
+```
+
+2. 对接口进行实现
+
+```java
+/**
+ * @Author jacklu
+ * @Date 12:43:44 2021/02/10
+ */
+@Component
+public class MyLB implements LoadBalancer {
+
+    //原子整数, 线程安全
+    private AtomicInteger atomicInteger = new AtomicInteger(0);
+
+    /**
+     * 这段代码很精妙, 自旋锁来发现自己是第几次访问
+     * @return 第几次访问
+     */
+    public final int getAndIncrement() {
+        int current;
+        int next;
+        do {
+            current = this.atomicInteger.get();
+            next = current >= Integer.MAX_VALUE ? 0 : current + 1;
+            //自旋
+        } while (!this.atomicInteger.compareAndSet(current, next));
+        System.out.println("*******第几次访问, 次数next:" + next);
+        return next;
+    }
+
+    /**
+     *  负载均衡算法: rest接口第几次请求数 % 服务器集群总数量 = 实际调用服务器位置下标, 每次服务启动后	   *rest接口计数从1开始
+     * @param serviceInstances 某个应用下的所有服务实例
+     * @return 具体的服务实例
+     */
+    @Override
+    public ServiceInstance instance(List<ServiceInstance> serviceInstances) {
+       int index =  getAndIncrement() % serviceInstances.size();
+        return serviceInstances.get(index);
+    }
+}
+```
+
+负载均衡已经定义好了, 下面就直接使用了(访问接口: /consumer/payment/lb测试即可)
+
+```java
+	@Resource
+    private DiscoveryClient discoveryClient;
+
+    //引入自己定义的聚在均衡器
+    @Resource
+    private LoadBalancer loadBalancer;
+
+ @GetMapping("/consumer/payment/lb")
+    public String getPaymentLB(){
+        //使用discoverClient获取CLOUD-PAYMENT-SERVICE应用下的所有服务
+        List<ServiceInstance> instances = discoveryClient.getInstances("CLOUD-PAYMENT-SERVICE");
+        if(instances == null || instances.size() <= 0){
+            return null;
+        }
+        ServiceInstance instance = loadBalancer.instance(instances);
+        URI uri = instance.getUri();
+        return restTemplate.getForObject(uri+"/payment/lb", String.class);
+    }
+
+```
+
+
+
+### Openfeign
+
+是什么?
+
+feign是一个声明式WebService客户端, 使用Feign能让编写WebService客户端更加简单, **==简单的来说就是用来做微服务的接口调用的, 使用于消费端,在实际开发过程中我们更偏向于这种方式==**
+
+**==它的使用方法是定义一个服务接口然后在上面添加注解, Feign可以与Eureka和Ribbon组合使用可以支持负载均衡==**
+
+![image-20210210142211768](img/image-20210210142211768.png)
+
+
+
+![image-20210210155318302](img/image-20210210155318302.png)
+
+
+
+#### 使用
+
+接口加注解:
+
+1. 引入依赖(分析依赖知道openfeign已经引入了ribbon, 已经具备了负载均衡的能力了)
+
+```xml
+	    <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
+```
+
+2. 消费者主启动类加注解
+
+```java
+@SpringBootApplication
+//开启Feign服务调用
+@EnableFeignClients
+public class OrderFeigbMain80 {
+    public static void main(String[] args) {
+        SpringApplication.run(OrderFeigbMain80.class, args);
+    }
+}
+```
+
+3. 声明openfeign的服务接口用来调用其他服务接口
+
+```java
+/**
+ * @Author jacklu
+ * @Date 16:11:43 2021/02/10
+ */
+@Component
+//指明要调用哪个应用下面的服务, 接口体要声明调用的具体服务
+@FeignClient(value = "CLOUD-PAYMENT-SERVICE")
+public interface PaymentFeignService {
+
+    //其他模块Controller层的访问地址和方法
+    @GetMapping(value = "/payment/get/{id}")
+    CommentResult<Payment> getPaymentById(@PathVariable("id") Long id);
+
+}
+```
+
+4. 使用openfeign(直接注入接口使用即可)
+
+```java
+@RestController
+@Slf4j
+public class OrderFeignController {
+
+    @Resource
+    private PaymentFeignService paymentFeignService;
+
+    @GetMapping("/consumer/payment/get/{id}")
+    public CommentResult<Payment> getPaymentById(@PathVariable("id") Long id){
+        return paymentFeignService.getPaymentById(id);
+    }
+
+}
+```
+
+使用总结:
+
+![image-20210215131955234](img/image-20210215131955234.png)
+
+
+
+
+
+#### 超时控制
+
+**==openfeign服务调用的默认等待时间是一秒钟==**, 如果某个服务的处理超过了一秒钟openfeign就不想等待了, 直接返回报错, 所以我们要进行超时控制, openfeign整合了ribbon, 我们的超时控制就是对ribbon的配置
+
+```properties
+ribbon:
+#  指的是建立连接所使用的时间, 适用于网络状况正常的情况下, 两端连接所用的时间
+  ReadTimeout:  5000
+#  指的是建立连接后从服务器读取到可用资源所用的时间
+  ConnectTimeout: 5000
+```
+
+
+
+#### 日志打印
+
+通过日志打印可以了解feign中http请求的细节, 说白了就是对Feign接口的调用情况进行监控和输出
+
+四个日志级别:
+
+1. ==NONE==: 默认的, 不显示任何日志
+2. ==BASIC==:  仅记录请求方法, URL, 响应状态码及执行时间
+3. ==HEADERS==: 除了BASIC定义的信息之外, 还有请求和响应的头信息
+4. ==FULL==: 除了HEADERS定义的信息之外, 还有请求和响应的正文及元数据
+
+
+
+如何开启日志功能?
+
+1. 往容器中添加bean
+
+```java
+/**
+ * @Author jacklu
+ * @Date 21:11:26 2021/02/15
+ */
+@Configuration
+public class FeignConfig {
+
+    @Bean
+    Logger.Level feignLoggerLevel() {
+        return Logger.Level.FULL;
+    }
+}
+```
+
+2. yml文件开启feign客户端的日志
+
+```properties
+logging:
+  level:
+#    feign日志以什么级别监控哪个接口
+    com.atguigu.springcloud.service.PaymentFeignService: debug
+```
+
+
+
+
+
+## 服务降级
+
+1. 是什么
+
+![image-20210215213545123](img/image-20210215213545123.png)
+
+几个重要的概念:
+
+1. 降级(fullback):  当服务发生故障之后, 向调用方返回一个符合预期的, 可处理的备选响应(服务器繁忙, 请稍后再试, 不让客户等待并立即返回一个友好提示, fallback)
+2. 熔断(break): 类比保险丝达到最大服务访问后, 直接拒绝访问, 拉闸限电, 然后调用服务降级的方法并返回友好提示
+3. 限流(limit): 秒杀高并发等操作, 严禁一窝蜂的过来拥挤, 大家排队, 一秒钟n个, 有序进行
+
+
+
+### Hystrix
+
+  hystrix如何进行降级(==当不符合我们的预期效果时指定候选方案, 可以在客户端, 也可以在服务端==)?
+
+#### 在服务端开启服务降级:
+
+1. 引入依赖
+
+```xml
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-hystrix</artifactId>
+        </dependency>
+```
+
+2. 开启断路器
+
+```java
+@EnableCircuitBreaker
+public class PaymentHystrixMain8001 {
+	...
+}
+```
+
+3. 在方法上使用注解@HystrixCommand即可
+
+```java
+ /**
+     * 服务的降级操作, 当服务出现异常或者超时或者宕机的时候采取的候补措施
+     * 指定候补措施为paymentInfo_TimeOutHandler方法
+     * @param id
+     * @return
+     */
+    @HystrixCommand(fallbackMethod = "paymentInfo_TimeOutHandler", commandProperties = {
+            //超过3秒还没有返回结果或者报错就执行候补措施
+            @HystrixProperty(name = "execution.isolation.thread.timeoutInMilliseconds",value = "3000")
+    })
+    public String paymentInfo_TimeOut(Integer id) {
+     ...
+    }
+
+    public String paymentInfo_TimeOutHandler(Integer id){
+        ...
+    };
+
+```
+
+
+
+#### 在客户端开启服务降级:
+
+1. 开yml中开启feign中的hystrix
+
+```properties
+feign:
+  hystrix:
+    enabled: true
+```
+
+2. 在主启动类上开启Hystrix
+
+```java
+@EnableHystrix
+@SpringBootApplication
+public class OrderHystrixMain80 {
+    public static void main(String[] args) {
+        SpringApplication.run(OrderHystrixMain80.class, args);
+    }
+}
+```
+
+3. 使用Hystrix注解进行降级
+
+```java
+/**
+ * @Author jacklu
+ * @Date 12:48:38 2021/02/16
+ */
+@RestController
+public class OrderHystrixController {
+
+    //openfeign接口
+    @Resource
+    private PaymentHystrixService paymentHystrixService;
+
+    @GetMapping("/consumer/payment/hystrix/timeout/{id}")
+    @HystrixCommand(fallbackMethod = "paymentTimeOutFallbackMethod",commandProperties = {
+         //超过1.5秒还没有返回结果或者报错就执行候补措施   
+        @HystrixProperty(name = "execution.isolation.thread.timeoutInMilliseconds",value = "1500")
+    })
+    public String paymentInfo_TimeOut(@PathVariable("id") Integer id){
+        String result = paymentHystrixService.paymentInfo_TimeOut(id);
+        return result;
+    }
+
+    //候选方法
+    public String paymentTimeOutFallbackMethod(@PathVariable("id") Integer id){
+        return "我是消费者80，对付支付系统繁忙请10秒钟后再试或者自己运行出错请检查自己,(┬＿┬)";
+    }
+}
+```
+
+
+
+
+
+---
+
+
+
+问题分析:
+
+上述的每一个方法我们都要为它声明一个候选方案, 这样就会让代码变得冗余且业务代码跟非业务代码混杂在了一块
+
+![image-20210216143553679](img/image-20210216143553679.png)
+
+
+
+---
+
+#### 如何简化服务降级时的候选方案?
+
+1. 在类上标注解@DefaultProperties
+
+```java
+//指明服务降级的时候默认的fallback用哪一个方法
+@DefaultProperties(defaultFallback = "payment_Global_FallbackMethod")
+public class OrderHystrixController {
+	 //下面是全局fallback方法
+    public String payment_Global_FallbackMethod(){
+        return "Global异常处理信息, 请稍后再试, /(ㄒoㄒ)/~~";
+    }
+}
+```
+
+2. 在这个类中使用候选方案时不用再指明fallbackMethod, 直接使用注解@HystrixCommand即可, 如果指明了则使用指明的fallbackMethod
+
+```java
+//指明服务降级的时候默认的fallback用哪一个方法
+@DefaultProperties(defaultFallback = "payment_Global_FallbackMethod")
+public class OrderHystrixController {
+	 //下面是全局fallback方法
+    public String payment_Global_FallbackMethod(){
+        return "Global异常处理信息, 请稍后再试, /(ㄒoㄒ)/~~";
+    }
+    
+    @GetMapping("/consumer/payment/hystrix/timeout/{id}")
+    @HystrixCommand
+    public String paymentInfo_TimeOut(@PathVariable("id") Integer id){
+        String result = paymentHystrixService.paymentInfo_TimeOut(id);
+        return result;
+    }
+}
+```
+
+
+
+上述只是简化了候选方案, 使用了全局的候选方案, 但是并没有做到解耦, 即业务逻辑还是和非业务逻辑混杂在一块
+
+**==既然我们是对微服务进行调用, 那么我们就可以从调用的接口着手来进行候选方案的解耦==**
+
+#### 如何优雅的对服务降级时的候选方案进行解耦?
+
+有如下微服务接口:
+
+```java
+/**
+ * @Author jacklu
+ * @Date 12:45:52 2021/02/16
+ */
+@Component
+@FeignClient(value = "CLOUD-PROVIDER-HYSTRIX-PAYMENT")
+public interface PaymentHystrixService {
+    @GetMapping("/payment/hystrix/ok/{id}")
+    public String paymentInfo_OK(@PathVariable("id") Integer id);
+
+    @GetMapping("/payment/hystrix/timeout/{id}")
+    public String paymentInfo_TimeOut(@PathVariable("id") Integer id);
+}
+```
+
+1. 在yml中开启feign对hystrix的支持
+
+```properties
+feign:
+  hystrix:
+    enabled: true
+```
+
+
+
+2. 创建一个类来实现FeignClient接口, **==并把该类添加到容器中==**
+
+```java
+/**
+ * @Author jacklu
+ * @Date 14:55:30 2021/02/16
+ */
+//该类就是服务降级的候选方案
+@Component
+public class PaymentFallbackService implements PaymentHystrixService{
+    @Override
+    public String paymentInfo_OK(Integer id) {
+        return "-----PaymentFallbackService fall back-paymentInfo_OK,/(ㄒoㄒ)/~~";
+    }
+
+    @Override
+    public String paymentInfo_TimeOut(Integer id) {
+        return "-----PaymentFallbackService fall back-paymentInfo_TimeOut,/(ㄒoㄒ)/~~";
+    }
+}
+```
+
+3. 微服务接口降级时使用该候选方案(@FeignClient指定fallback是哪个实现了给接口的类), 这时就不用再使用@HystrixCommand注解了, 因为我们已经为微服务的方法制定了fallback, 再加@HystrixCommand就会出错
+
+```java
+@Component
+@FeignClient(value = "CLOUD-PROVIDER-HYSTRIX-PAYMENT", fallback = PaymentFallbackService.class)
+public interface PaymentHystrixService {
+    @GetMapping("/payment/hystrix/ok/{id}")
+    public String paymentInfo_OK(@PathVariable("id") Integer id);
+
+    @GetMapping("/payment/hystrix/timeout/{id}")
+    public String paymentInfo_TimeOut(@PathVariable("id") Integer id);
+}
+```
+
+4. 服务调用
+
+```java
+@RestController
+public class OrderHystrixController {
+
+    //openfeign接口
+    @Resource
+    private PaymentHystrixService paymentHystrixService;
+    
+    @GetMapping("/consumer/payment/hystrix/timeout/{id}")
+    public String paymentInfo_TimeOut(@PathVariable("id") Integer id){
+        String result = paymentHystrixService.paymentInfo_TimeOut(id);
+        return result;
+    }
+}  
+```
+
+
+
+## 服务熔断
+
+什么是服务熔断?
+
+![image-20210216160620357](img/image-20210216160620357.png)
+
+![image-20210216160857010](img/image-20210216160857010.png)
+
+服务的熔断直接使用注解@HystrixCommand
+
+```java
+ //===============服务熔断
+
+    @HystrixCommand(fallbackMethod = "paymentCircuitBreaker_fallback",commandProperties = {
+            @HystrixProperty(name = "circuitBreaker.enabled",value = "true"),  //是否开启断路器
+            @HystrixProperty(name = "circuitBreaker.requestVolumeThreshold",value = "10"),   //请求次数
+            @HystrixProperty(name = "circuitBreaker.sleepWindowInMilliseconds",value = "10000"),  //时间范围
+            @HystrixProperty(name = "circuitBreaker.errorThresholdPercentage",value = "60"), //失败率达到多少后跳闸
+    })
+    public String paymentCircuitBreaker(@PathVariable("id") Integer id){
+        if (id < 0){
+            throw new RuntimeException("*****id 不能负数");
+        }
+        String serialNumber = IdUtil.simpleUUID();
+
+        return Thread.currentThread().getName()+"\t"+"调用成功,流水号："+serialNumber;
+    }
+```
+
+什么时候进行熔断?
+
+![image-20210216200305940](img/image-20210216200305940.png)
 
