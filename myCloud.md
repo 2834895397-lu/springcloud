@@ -1238,17 +1238,27 @@ public class OrderHystrixController {
 
 ## 服务熔断
 
-什么是服务熔断?
+### Hystrix
+
+什么是服务熔断?**==(熔断的一般过程:  降级 => 熔断 => 恢复链路)==**
 
 ![image-20210216160620357](img/image-20210216160620357.png)
 
+
+
+**==熔断的状态有三种类型:==**
+
 ![image-20210216160857010](img/image-20210216160857010.png)
+
+![image-20210308095343312](img/image-20210308095343312.png)
+
+
 
 服务的熔断直接使用注解@HystrixCommand
 
 ```java
  //===============服务熔断
-
+//在10s内十次的请求次数失败率达到百分之60之后跳闸, 后面多次访问正确了才慢慢恢复链路的调用
     @HystrixCommand(fallbackMethod = "paymentCircuitBreaker_fallback",commandProperties = {
             @HystrixProperty(name = "circuitBreaker.enabled",value = "true"),  //是否开启断路器
             @HystrixProperty(name = "circuitBreaker.requestVolumeThreshold",value = "10"),   //请求次数
@@ -1269,3 +1279,133 @@ public class OrderHystrixController {
 
 ![image-20210216200305940](img/image-20210216200305940.png)
 
+##### 
+
+#### 断路器的三个重要的参数:
+
+1. 快照时间窗(circuitBreaker.sleepWindowInMilliseconds):  短路器确定是否打开需要统计一些请求和错误数据, 而统计的时间范围就是快照时间窗, 默认为最近的10s
+2. 请求总数阈值(circuitBreaker.requestVolumeThreshold): 在快照时间窗内, 必须满足请求总数阈值才有资格熔断, 默认为20, 意味着在10s内, 如果该Hystrix命令的调用次数不足20次, 即使所有的请求都超时或其他原因失败, 断路器都不会打开
+3. 错误百分比阈值(circuitBreaker.errorThresholdPercentage): 当请求总数在快照时间窗内超过了阈值, 比如发生了30次调用, 如果在这30次调用中, 有15次发生了超时异常,在设定50%阈值的情况下, 这时候就会将断路器打开
+
+
+
+
+
+#### Hystrix所有配置参数:
+
+![image-20210308101809416](img/image-20210308101809416.png)
+
+
+
+#### 服务监控:
+
+除了隔离依赖服务的调用以外, Hystrix还提供了准实时的调用监控(Hystrix Dashboard),  Hystrix会持续的记录所有通过Hystrix发起的请求的执行信息, 并以统计报表和图形的形式展示给用户, 包括每秒多少请求执行成功, 多少失败等. Netflix通过hystrix-metrics-event-stream项目实施了对以上指标的监控, SpringCloud也提供了Hystrix Dashboard的整合, 对监控内容转化成可是界面.
+
+如何使用:
+
+1. 引入依赖:
+
+```properties
+ 		<!--新增hystrix dashboard-->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-hystrix-dashboard</artifactId>
+        </dependency>
+        
+        <!--图形监控的依赖, 凡是监控的, 这个依赖都要有-->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+```
+
+2. 开启HystrixDashboard功能
+
+```java
+/**
+ * @Author jacklu
+ * @Date 10:53:57 2021/03/08
+ */
+@SpringBootApplication
+@EnableHystrixDashboard
+public class HystrixDashboardMain9001 {
+    public static void main(String[] args) {
+        SpringApplication.run(HystrixDashboardMain9001.class, args);
+    }
+}
+```
+
+如何检测Hystrix图形界面是否搭建成功?
+
+启动项目, 直接访问:http://localhost:9001/hystrix, 如果出现以下界面则说明成功:
+
+![image-20210308110056871](img/image-20210308110056871.png)
+
+
+
+##### 指定监控路径:
+
+要监控哪一个Hystrix就要在哪一个主启类上指定监控路径
+
+```java
+/**
+ * @Author jacklu
+ * @Date 21:56:17 2021/02/15
+ */
+@SpringBootApplication
+@EnableEurekaClient
+@EnableCircuitBreaker
+public class PaymentHystrixMain8001 {
+    public static void main(String[] args) {
+        SpringApplication.run(PaymentHystrixMain8001.class, args);
+    }
+
+
+    /**
+     * 新版的Hystrix需要在被监控的主启类上指定监控路径
+     * 此配置是为了服务监控而配置, 与服务容错本身无关, springcloud升级后的坑
+     * ServletRegistrationBean因为springboot的默认路径不是"/hystrix.stream",
+     * 只要在自己的项目里面配置上下面的servlet就可以了
+     * @return
+     */
+    @Bean
+    public ServletRegistrationBean getServlet(){
+        HystrixMetricsStreamServlet streamServlet = new HystrixMetricsStreamServlet();
+        ServletRegistrationBean registrationBean = new ServletRegistrationBean(streamServlet);
+        registrationBean.setLoadOnStartup(1);
+        registrationBean.addUrlMappings("/hystrix.stream");
+        registrationBean.setName("HystrixMetricsStreamServlet");
+        return registrationBean;
+    }
+
+}
+```
+
+做好了上述的步骤之后, 就可以进行监控我们的Hystrix了
+
+
+
+##### 如何监控:
+
+1. 端口(要监控的端口)+/hystrix.stream(根据上面的配置, /hystrix.stream就能映射到我们HystrixMetricsStreamServlet Bean)
+
+![image-20210308112811280](img/image-20210308112811280.png)
+
+然后直接点击Monitor Stream就可以进行监控了
+
+![image-20210308112218934](img/image-20210308112218934.png)
+
+上面监控图中实心圆的含义:
+
+1. 通过颜色的变化代表了实例的健康程度, 它的健康度从绿黄橙红递减
+2. 根据请求的流量发生大小的变化, 流量越大该实心圆就越大. 所以通过该实心圆的展示, 就可以在大量的实例中快速的发现故障实例和高压力实例
+
+曲线的含义:
+
+1. 用来记录两分钟内流量的相对变化, 可以通过它来观察到流量的上升和下降趋势
+
+整图说明:
+
+![image-20210308112950399](img/image-20210308112950399.png)
+
+![image-20210308113129343](img/image-20210308113129343.png)
