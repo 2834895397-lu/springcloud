@@ -883,7 +883,7 @@ public class OrderFeigbMain80 {
 @FeignClient(value = "CLOUD-PAYMENT-SERVICE")
 public interface PaymentFeignService {
 
-    //其他模块Controller层的访问地址和方法
+    //其他模`块Controller层的访问地址和方法
     @GetMapping(value = "/payment/get/{id}")
     CommentResult<Payment> getPaymentById(@PathVariable("id") Long id);
 
@@ -1409,3 +1409,260 @@ public class PaymentHystrixMain8001 {
 ![image-20210308112950399](img/image-20210308112950399.png)
 
 ![image-20210308113129343](img/image-20210308113129343.png)
+
+
+
+---
+
+
+
+## 网关
+
+![image-20210310193759759](img/image-20210310193759759.png)
+
+能做什么?
+
+**==提供一种简单而有效的方式来对API进行路由, 以及提供一些强大的过滤器功能, 例如: 熔断, 限流, 重试等等==**
+
+![image-20210310194210144](img/image-20210310194210144.png)
+
+### Gateway三大核心概念
+
+1. ==**Route(路由): 路由是构建网关的基本模块, 他由ID, 目标URI, 一系列的断言和过滤器组成, 如果断言为true则匹配改路由**==
+2. ==**Predicate(断言): 参考java8的java.util.function.Predicate, 开发人员可以匹配HTTP请求中的所有内容(例如请求头或请求参数), 如果请求与断言相匹配则进行路由**==
+3. ==**Filter(过滤): 指的是spring框架中GatewayFilter的实例, 使用过滤器, 可以在请求被路由或者之后对请求进行修改**==
+
+![image-20210310214811756](img/image-20210310214811756.png)
+
+### 网关如何使用?
+
+1. 引入依赖
+
+```xml
+ <!--新增gateway-->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-gateway</artifactId>
+        </dependency>
+```
+
+2. **==将网关注册到我们的注册中心和网关路由的配置==**
+
+```properties
+server:
+  port: 9527
+spring:
+  application:
+    name: cloud-gateway
+  cloud:
+    gateway: #网关路由的配置还可以用编码的方式来实现, 如下列2.1
+      routes:
+      - id: payment_routh #路由的ID，没有固定规则但要求唯一，建议配合服务名
+        uri: http://localhost:8001   #匹配后提供服务的路由地址
+        predicates:
+          - Path=/payment/get/**   #断言,路径相匹配的进行路由
+
+      - id: payment_routh2
+        uri: http://localhost:8001
+        predicates:
+          - Path=/payment/lb/**   #断言,路径相匹配的进行路由
+
+
+eureka:
+  instance:
+    hostname: cloud-gateway-service
+  client:
+    service-url:
+      register-with-eureka: true
+      fetch-registry: true
+      defaultZone: http://eureka7001.com:7001/eureka
+```
+
+2.1 网关路由配置的编码实现方式, 代替上面的配置文件配置
+
+```java
+
+/**
+ * @Author jacklu
+ * @Date 23:00:14 2021/03/10
+ */
+@Configuration
+public class GateWayConfig {
+    /**
+     * 配置了一个id为route-name的路由规则,
+     * 当访问地址http://localhost:9527/guonei时会自动转发到地址http://news.baidu.com/guonei
+     * @param routeLocatorBuilder
+     * @return
+     */
+    @Bean
+    public RouteLocator customerRoutLocator(RouteLocatorBuilder routeLocatorBuilder){
+        RouteLocatorBuilder.Builder routes = routeLocatorBuilder.routes();
+        //路由的id可以自己随便起名, 但是要保证是唯一的
+        routes.route("path_route_atguigu",r->r.path("/guonei").uri("http://news.baidu.com/guonei")).build();
+        return routes.build();
+
+    }
+}
+```
+
+
+
+### 网关来实现负载均衡:
+
+修改yml:  spring.cloud.gateway.discovery.enabled = true, 这样就可以利用微服务名进行路由
+
+```properties
+server:
+  port: 9527
+spring:
+  application:
+    name: cloud-gateway
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: true  #开启从注册中心动态创建路由的功能，利用微服务名进行路由
+      routes:
+        - id: payment_routh #路由的ID，没有固定规则但要求唯一，建议配合服务名
+          uri: lb://cloud-payment-service
+          predicates:
+            - Path=/payment/get/**   #断言,路径相匹配的进行路由
+
+        - id: payment_routh2
+          uri: lb://cloud-payment-service
+          predicates:
+            - Path=/payment/lb/**   #断言,路径相匹配的进行路由
+
+
+eureka:
+  instance:
+    hostname: cloud-gateway-service
+    instance-id: gateway9527
+  client:
+    service-url:
+      register-with-eureka: true
+      fetch-registry: true
+      defaultZone: http://eureka7001.com:7001/eureka
+```
+
+
+
+### 路由断言
+
+上面我们只用到了路由的路径断言path, 除了path匹配让网关找我们的微服务之外, 我们还可以使用其他断言:
+
+1. **After断言: 在指定的时间之后网关才能访问此微服务, 时间格式是ZoneDateTime类型**
+
+```properties
+ routes:
+        - id: payment_routh #路由的ID，没有固定规则但要求唯一，建议配合服务名
+          uri: lb://cloud-payment-service
+          predicates:
+            - Path=/payment/get/**   #断言,路径相匹配的进行路由
+            #在这个时间之后网关才能匹配到cloud-payment-service这个微服务
+            - After=2020-03-08T10:59:34.102+08:00[Asia/Shanghai]
+```
+
+2. **Before断言: 跟After断言相同**
+3. **Between断言: 跟After断言相同, 时间用逗号隔开**
+4. **Cookie断言: 需要两个参数, 一个是cookie名字, 一个是正则表达式. 路由规则会通过获取对应的cookie名字和正则表达式去匹配, 如果匹配上就会执行路由, 如果没有匹配上则不执行**
+
+```properties
+- Cookie=jacklu, liuming
+```
+
+**测试的时候cookie如何携带呢?**
+
+**请求中携带cookie有很多种方式, 下面用curl的方式来测试:**
+
+**![image-20210311223253695](img/image-20210311223253695.png)**
+
+5. **Header断言: 需要两个参数, 第一个表示请求头要有这个属性, 第二个是一个正则表达式**
+
+```properties
+#表示请求头必须有xxx作为key, value用\d+(正则表达式, 表示一个正整数)来进行匹配
+- Header=xxx, \d+
+```
+
+**测试:**
+
+**![image-20210311224714778](img/image-20210311224714778.png)**
+
+6. **Host断言:** 
+
+```properties
+  - Host=**.atguigu.com
+```
+
+**测试:**
+
+**![image-20210311225754377](img/image-20210311225754377.png)**
+
+7. **Method断言:**
+
+```properties
+    - Method=GET
+```
+
+8. **Path断言:**
+9. **Query断言: 地址要有参数名**
+
+```properties
+#	/**/?username=520
+- Query=username, \d+
+```
+
+
+
+#### 总结: 
+
+说白了, Predicate就是为了实现一组匹配规则, 让请求找到对应的Route进行处理
+
+
+
+***
+
+
+
+### gateway的Filter
+
+![image-20210311230417045](img/image-20210311230417045.png)
+
+**==路由过滤器可用于修改进入的HTTP请求和返回的HTTP响应, 路由过滤器只能指定路由进行使用, springCoudGateway内置了多种路由过滤器, 他们都由GatewayFilter的工厂类来产生==**
+
+
+
+网关的过滤器也可以用配置的方式, 下面我演示用编码的方式:(实现响应的接口, 并且把它加到容器中即可)
+
+```java
+/**
+ * @Author jacklu
+ * @Date 23:20:12 2021/03/11
+ */
+@Component
+@Slf4j
+public class MyGateWayFilter implements GlobalFilter, Ordered {
+
+    //过滤链
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        log.info("***********come in MyGateWayFilter");
+        String username = exchange.getRequest().getQueryParams().getFirst("username");
+        if(username == null){
+            log.info("***********用户名为null, 非法用户, /(ㄒoㄒ)/~~");
+        }
+        return chain.filter(exchange);
+    }
+
+    //加载的过滤器数字越小, 优先级越高
+    @Override
+    public int getOrder() {
+        return 0;
+    }
+}
+
+```
+
+这样子我们就必须带上QueryParams为username才会被放行, 测试结果如下:
+
+![image-20210311234135219](img/image-20210311234135219.png)
