@@ -1632,7 +1632,7 @@ eureka:
 
 
 
-网关的过滤器也可以用配置的方式, 下面我演示用编码的方式:(实现响应的接口, 并且把它加到容器中即可)
+网关的过滤器也可以用配置的方式(**==是路由的一个配置项==**), 下面我演示用编码的方式:(实现响应的接口, 并且把它加到容器中即可)
 
 ```java
 /**
@@ -1666,3 +1666,97 @@ public class MyGateWayFilter implements GlobalFilter, Ordered {
 这样子我们就必须带上QueryParams为username才会被放行, 测试结果如下:
 
 ![image-20210311234135219](img/image-20210311234135219.png)
+
+
+
+***
+
+
+
+## 服务配置
+
+### springcloud config
+
+由于每个服务都需要必要的配置才能运行, 所以一套集中式的, 动态的配置管理设施是必不可少的, springcloud提供了ConfigServer来解决这一个问题. springcloud config为微服务架构中的微服务提供集中化的外部配置支持, 配置服务器为各个不同微服务应用的所有环境提供了一个中心化的外部配置
+
+![image-20210313223534348](img/image-20210313223534348.png)
+
+根据上图可知每个微服务都来读取我的config Server这个微服务配置, 所以Config Server也要注册到我们的注册中心, 而Config Server又要跟我们的github进行关联, **==所以我们的配置是托管在github上面的, 通过Config Server就可以读取到github上面的配置==**
+
+---
+
+
+
+#### 搭建springcloud config
+
+##### 服务端的配置:
+
+1. 引入依赖
+
+```properties
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-config-server</artifactId>
+        </dependency>
+```
+
+我的远程仓库为下图:
+
+![image-20210313233736187](img/image-20210313233736187.png)
+
+2. 把它注册到我们的注册中心里面, 并且与github远端文件进行一个关联
+
+```properties
+server:
+  port: 3344
+spring:
+  application:
+    name: cloud-config-center
+  cloud:
+    config:
+      server:
+        git:
+          uri: https://github.com/2834895397-lu/springcloud-config.git  #填写你自己的github仓库的路径
+          search-paths:
+            - springcloud-config #搜索的目录
+      label: master #读取的分支
+eureka:
+  client:
+    service-url:
+      defaultZone:  http://localhost:7001/eureka
+```
+
+经过上述步骤我们就把配置中心注册到我们的注册中心中, 并且跟远程仓库进行了关联, 到这里我们的注册中心就可以读取我们的远端文件了
+
+---
+
+
+
+##### 配置中心读取远端文件规则: 
+
+1. /{label}/{application}-{profile}.yml(最推荐这种方式)         也就是  **==/分支/文件==**
+
+![image-20210313234208802](img/image-20210313234208802.png)
+
+2. /{application}-{profile}.yml  也就是  **==/文件名==**
+
+![image-20210313235238894](img/image-20210313235238894.png)
+
+3. /{application}-{profile}/{label}   也就是  **==/文件名/分支==**        **不过这种是把读取的信息封装到json中, 包括了我的一些仓库的信息**
+
+![image-20210313235432803](img/image-20210313235432803.png)
+
+---
+
+
+
+##### 客户端的配置
+
+前置知识:
+
+​	application.yml 和 bootstrap.yml: 前者是用户及的配置文件, 后者是系统级的配置文件, bootstrap具有更高的优先级
+
+![image-20210314000759970](img/image-20210314000759970.png)
+
+
+
