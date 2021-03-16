@@ -1754,9 +1754,275 @@ eureka:
 
 前置知识:
 
-​	application.yml 和 bootstrap.yml: 前者是用户及的配置文件, 后者是系统级的配置文件, bootstrap具有更高的优先级
+​	application.yml 和 bootstrap.yml: 前者是用户及的配置文件, 后者是系统级的配置文件, **==bootstrap具有更高的优先级, bootstrap配置文件会覆盖application的配置文件, bootstrap绑定的远端配置文件会覆盖bootstrap的配置文件, 他们之间形成互补配置==**
 
 ![image-20210314000759970](img/image-20210314000759970.png)
 
 
 
+1. 引入依赖
+
+```xml
+ 		<dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-config</artifactId>
+        </dependency>
+```
+
+2. 新建**==bootstrap.yml==**和配置中心的服务端进行关联(**==配置中心客户端也要注册到我们的注册中心==**)
+
+```properties
+server:
+  port: 3355
+
+spring:
+  application:
+    name: config-client
+  cloud:
+    config:
+      label: master #分支名称
+      name: config #读取的配置文件名称
+      profile: dev #读取的文件的后缀名
+      #上述三个综合: master分支上config-dev.yml的配置文件被读取http://config-3344.com:3344/master/config-dev.yml
+      uri: http://localhost:3344 #配置中心的地址
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eureka7001.com:7001/eureka
+```
+
+==**经过上述步骤, 配置中心的客户端就可以读取到配置中心服务端的配置文件, 读取的文件为master分支下面的config-dev.yml, 然后这个文件和我们的bootstrap.yml形成互补配置, 配置优先级是 远端 > bootstrap > application, 我们可以直接通过@value("${xxx}")来取得配置文件, 他会按照优先级一个一个的查找这些值**==
+
+
+
+远端配置文件内容为:  server.port=9999,  bootstrap为server.port=3355, application为server.port=8006, 在启动的时候我们可以看到是以9999端口启动的:
+
+![image-20210314104545561](img/image-20210314104545561.png)
+
+我们可以写一个controller进行测试读取:
+
+```java
+/**
+ * @Author jacklu
+ * @Date 10:13:48 2021/03/14
+ */
+@RestController
+public class ConfigClientController {
+    @Value("${server.port}")
+    private String configInfo;
+
+    @GetMapping("/configInfo")
+    public String getConfigInfo(){
+        return configInfo;
+    }
+}
+```
+
+测试结果:
+
+![image-20210314104710290](img/image-20210314104710290.png)
+
+---
+
+
+
+##### 动态刷新
+
+当我们从远端的github上面把我们的配置文件改了, 我们的配置中心服务端是能够感知得到的, 但是我们的客户端是感知不到的, 重启客户端可以解决这个问题, 但是这样很麻烦, 这时候就**==需要客户端进行一种动态的刷新==**
+
+
+
+1. 客户端引入依赖图形监控的依赖
+
+```xml
+		<dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+```
+
+2. 在客户端的bootstrap.yml里面暴露监控端点
+
+```properties
+#暴露监控端点
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+```
+
+3. 客户端在获取远端配置的类上使用动态刷新注解@RefreshScope
+
+```java
+/**
+ * @Author jacklu
+ * @Date 10:13:48 2021/03/14
+ */
+@RestController
+@RefreshScope
+public class ConfigClientController {
+    @Value("${server.port}")
+    private String configInfo;
+
+    @GetMapping("/configInfo")
+    public String getConfigInfo(){
+        return configInfo;
+    }
+}
+```
+
+3. **==当我们修改完了远端的配置文件, 要发送一个post请求去刷新客户端的配置, 下面我使用crul的方式发送post请求(固定写法:  配置中心客户端/actuator/refresh)==**
+
+```java
+curl -X POST "http://localhost:3355/actuator/refresh"  # 配置中心客户端/actuator/refresh
+```
+
+![image-20210314121904977](img/image-20210314121904977.png)
+
+
+
+通过上述步骤我们只是实现了手动版的动态刷新, 假如我们有100台配置中心客户端, 我们就要发送一百次post请求来动态的刷新我们的客户端, 这是非常不友好的, 有没有一个办法就是直接进行广播, 一处通知, 处处生效或者直接批量指定哪些机器要动态的读取我们的配置文件, 这就要使用到我们的消息总线了
+
+
+
+## 消息总线
+
+SpringCloud Bus 配合 SpringCloud Config使用可以实现配置的动态刷新, SpringCloud Bus目前只支持RabbitMQ和Kafka, 运行原理如图所示, 其实就是让微服务通过订阅的方式来传播我们的事件
+
+
+
+### 	两种通知方式:
+
+
+
+1. **消息总线通知配置中心的客户端(利用消息总线触发一个客户端/bus/refresh, 而刷新所有客户端的配置)**
+
+![image-20210314123226816](img/image-20210314123226816.png)
+
+
+
+2. **消息总线通知配置中心的服务端(利用消息总线触发一个服务端ConfigServer的/bus/refresh节点, 而刷新所有客户端的配置), 而实际中则更倾向于这种**
+
+
+
+![image-20210314123359358](img/image-20210314123359358.png)
+
+
+
+---
+
+
+
+**什么是总线:**
+
+​	在微服务架构的系统中, 通常会使用轻量级的消息代理来构建一个共用的消息主题, 并让系统中所有微服务实例都连接上来, 由于该主题中产生的消息会被所有实例监听和消费, 所以称它为消息总线. 在总线上的各个实例, 都可以方便的广播一些需要让其他连接在该主题上的实例都知道的消息.
+
+
+
+**基本原理:**
+
+​	==ConfigClient实例都监听MQ中同一topic(默认是SpringCloudBus), 当一个服务刷新数据的时候, 他会把这个消息放入到topic中, 这样其他监听同一个topic的服务就能得到通知, 然后去更新自身的配置==
+
+
+
+### 编码实操:
+
+由于我使用的是第二种通知的方式, 也就是让我们的配置中心服务端来通知
+
+#### 配置中心服务端:
+
+1. 添加消息总线的支持
+
+```properties
+ <!--添加消息总线rabbitMQ的支持-->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-bus-amqp</artifactId>
+        </dependency>
+        
+        <!--监控用到的-->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+```
+
+2. 在yml中配置我们的MQ(前提是我们的机子已经安装好了RabbitMQ)
+
+```properties
+rabbitmq:
+  host: localhost
+  port: 5672
+  username: guest
+  password: guest
+  
+#rabbitMQ的相关配置, 暴露bus刷新配置的端点
+management:
+  endpoints: #暴露bus刷新配置的端点, 凡是暴露监控或者刷新, pom里面一定要有actuator依赖
+    web:
+      exposure:
+        include: 'bus-refresh' #固定的, 发送/bus-refresh就能刷新我们的配置中心服务端
+```
+
+#### 配置中心客户端:
+
+1. 添加消息总线的支持
+
+```properties
+ <!--添加消息总线rabbitMQ的支持-->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-bus-amqp</artifactId>
+        </dependency>
+        
+        <!--监控用到的-->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+```
+
+2. 在yml中配置我们的MQ(前提是我们的机子已经安装好了RabbitMQ)
+
+```properties
+spirng:
+	rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
+    
+# 暴露端点, 目的就是让我们动态的从远端获取配置文件
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+```
+
+以上多个配置中心客户端都是同样的配置
+
+做完上述配置之后, 当我们修改了远端仓库的配置文件, 我们只需要个配置中心服务端发送一个post请求即可刷新所有的数据:(**==actuator/bus-refresh为固定请求==**)
+
+![image-20210316171857660](img/image-20210316171857660.png)
+
+假如说我们想要通知其中某一个的客户端, 我们也可以通过给配置中心服务端发送post请求来指定要通知的客户端(/actuator/bus-refresh/{applicationName:port})
+
+![image-20210316173934836](img/image-20210316173934836.png)
+
+---
+
+上面的整个消息总线和服务配置搭配运行的原理如下图所示:
+
+![image-20210316174507261](img/image-20210316174507261.png)
+
+
+
+
+
+## 消息驱动
+
+为什么要使用消息驱动(cloud stream)?
+
+消息中间件有很多种, 我们希望
