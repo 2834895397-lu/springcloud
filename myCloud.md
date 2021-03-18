@@ -2021,8 +2021,328 @@ management:
 
 
 
-## 消息驱动
+## 消息驱动(spring cloud stream)
 
 为什么要使用消息驱动(cloud stream)?
 
-消息中间件有很多种, 我们希望
+消息中间件有很多种, 我们希望不需要去记很多种的消息中间件的使用, 希望通过一种就能够操作其他的消息中间件,也就是不再需要关注MQ的细节, 我们只需要用一种适配绑定的方式, 自动的给我们在各种MQ内切换,  消息驱动就应运而生.
+
+
+
+### 什么是Spring Cloud Stream?
+
+官方定义: 是一个构建消息驱动微服务的框架
+
+**应用程序可以通过==inputs==或者==outputs==来与Spring Cloud Stream中的==biner==对象交互.**
+
+通过我们配置**==binding==**(绑定), 而Spring Cloud Stream得binder对象负责与消息中间件交互, 所以我们只需要搞清楚如何与Spring Cloud Stream交互就可以方便使用消息驱动的方式. 
+
+通过使用Spring Cloud Integration来连接消息代理中间件以实现消息事件驱动.
+
+Spring Cloud Stream为一些供应商的消息中间件产品提供了个性化的自动化配置实现, 应用了**==发布-订阅, 消息组, 分区==**三个核心概念.
+
+**目前仅支持RabbitMQ和Kafka**
+
+
+
+标准的MQ包括基本的三个内容:
+
+1. 消息: Message
+2. 通道: 消息必须走指定的通道MessageChannel
+3. 处理: 消息通道里面的消息如何被消费: 消息通道MessageChannel的子接口SubscribableChannel, 由MessageHandler消息处理所订阅
+
+
+
+为什么要引入cloud stream, 下面来看一幅图:
+
+![image-20210317101240589](img/image-20210317101240589.png)
+
+![image-20210317101349542](img/image-20210317101349542.png)
+
+
+
+Spring Cloud Stream处理的框架如图所示:
+
+![image-20210317101556807](img/image-20210317101556807.png)
+
+**==通过定义绑定器Binder作为中间层, 实现了应用程序与消息中间件细节之间的隔离==**
+
+详细底层工作流程图:
+
+![image-20210317102001636](img/image-20210317102001636.png)
+
+1. Binder: 很方便的**==连接中间件==**, 屏蔽差异
+2. Channel: 是队列的一种抽象, 在消息通讯系统中就是**==实现存储和转发的媒介==**, 通过对Channel队列进行配置
+3. Source和Sink: 简单的可理解为参照对象是spring cloud stream自身, 从stream发布消息就是输出, 接收消息就是输入
+
+
+
+---
+
+
+
+### Spring Cloud Stream编码常用api和注解
+
+## ![image-20210317102156631](img/image-20210317102156631.png)
+
+
+
+---
+
+
+
+### 编码实操:
+
+#### 生产者:
+
+1. 引入依赖:
+
+```xml
+	   <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-stream-rabbit</artifactId>
+        </dependency>
+```
+
+2. 改写yml
+
+```properties
+spring:
+  application:
+    name: cloud-stream-provider
+  cloud:
+    stream:
+      binders: # 在此处配置要绑定的rabbitmq的服务信息；
+        defaultRabbit: # 表示定义的名称，用于于binding整合
+          type: rabbit # 消息组件类型
+          environment: # 设置rabbitmq的相关的环境配置
+            spring:
+              rabbitmq:
+                host: localhost
+                port: 5672
+                username: guest
+                password: guest
+      bindings: # 服务的整合处理
+        output: # 这个名字是一个通道的名称
+          destination: studyExchange # 表示要使用的Exchange名称定义
+          content-type: application/json # 设置消息类型，本次为json，文本则设置“text/plain”
+          binder: defaultRabbit #设置要绑定的消息服务的具体设置
+```
+
+3. 使用相关注解进行生产
+
+```java
+/**
+ * @Author jacklu
+ * @Date 10:43:37 2021/03/17
+ */
+@EnableBinding(Source.class)//定义消息的推送管道, 点进去就知道它里面有一个@Configuration
+public class MessageProviderImpl implements IMessageProvider {
+
+    @Resource
+    private MessageChannel output; //消息发送管道
+
+    @Override
+    public String send() {
+        String serial = UUID.randomUUID().toString();
+        output.send(MessageBuilder.withPayload(serial).build());
+        System.out.println("***********serial:"+ serial);
+        return null;
+    }
+}
+```
+
+
+
+---
+
+#### 消费者
+
+1. 引入依赖:
+
+```xml
+	   <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-stream-rabbit</artifactId>
+        </dependency>
+```
+
+2. 改写yml
+
+```properties
+server:
+  port: 8802
+
+spring:
+  application:
+    name: cloud-stream-consumer
+  cloud:
+    stream:
+      binders: # 在此处配置要绑定的rabbitmq的服务信息；
+        defaultRabbit: # 表示定义的名称，用于于binding整合
+          type: rabbit # 消息组件类型
+          environment: # 设置rabbitmq的相关的环境配置
+            spring:
+              rabbitmq:
+                host: localhost
+                port: 5672
+                username: guest
+                password: guest
+      bindings: # 服务的整合处理
+        input: # 这个名字是一个通道的名称
+          destination: studyExchange # 表示要使用的Exchange名称定义
+          content-type: application/json # 设置消息类型，本次为json，文本则设置“text/plain”
+          binder: defaultRabbit  # 设置要绑定的消息服务的具体设置
+```
+
+3. 使用相关注解进行消费
+
+```java
+/**
+ * @Author jacklu
+ * @Date 13:20:37 2021/03/17
+ */
+@Component
+@EnableBinding(Sink.class)
+public class ReceiveMessageListenerController {
+
+    @Value("${server.port}")
+    private String serverPort;
+
+    @StreamListener(Sink.INPUT)
+    public void input(Message<String> message) {
+        System.out.println("消费者1号, ---->接收到的消息:" + message.getPayload() + "serverPort:" + serverPort);
+    }
+}
+```
+
+
+
+---
+
+
+
+#### 重复消费问题:
+
+同一个队列里面的消息会被多个消费者进行消费, 我们就要避免这种情况, **==根据这一点我们就引入了分组的概念, 也就是不同的组可以全面消费的(重复消费), 同一组内会发生竞争关系, 只有其中一个可以消费.==**
+
+下面两个就是不同的分组:
+
+![image-20210318095544389](img/image-20210318095544389.png)
+
+
+
+要分组的话只要在消费端通过group配置以下就可以了:
+
+```properties
+spring:
+  application:
+    name: cloud-stream-consumer
+  cloud:
+    stream:
+      binders: # 在此处配置要绑定的rabbitmq的服务信息；
+        defaultRabbit: # 表示定义的名称，用于于binding整合
+          type: rabbit # 消息组件类型
+          environment: # 设置rabbitmq的相关的环境配置
+            spring:
+              rabbitmq:
+                host: localhost
+                port: 5672
+                username: guest
+                password: guest
+      bindings: # 服务的整合处理
+        input: # 这个名字是一个通道的名称
+          destination: studyExchange # 表示要使用的Exchange名称定义
+          content-type: application/json # 设置消息类型，本次为对象json，如果是文本则设置“text/plain”
+          binder: defaultRabbit # 设置要绑定的消息服务的具体设置
+          group: atguiguA
+```
+
+
+
+---
+
+
+
+#### 消息的持久化:
+
+   **==消息的持久化就是一定要对消费者进行分组, 否则当消费者宕机重启之后, 消费者就拿不到队列里面的消息, 而分组是可以拿到的==**
+
+
+
+***
+
+
+
+## Sleuth
+
+什么是Sleuth, 能用来干什么, 解决了什么问题?
+
+在微服务框架中, 一个由客户端发起的请求在后端系统中会经过多个不同的服务节点调用来协同最后产生的请求结果, 每一个前段请求都会形成一条复杂的**==分布式服务调用链路==**, 链路中的任何一环出现高延时或错误都会引起整个请求最后的失败. 所以Sleuth解决的是链路跟踪.
+
+![image-20210318100921126](img/image-20210318100921126.png)
+
+
+
+**==Sleuth负责链路的跟踪, zipkin负责链路的展现==**
+
+zipkin的jar包自行下载, 下载完成之后直接java -jar执行:
+
+![image-20210318101800585](img/image-20210318101800585.png)
+
+zipkin启动之后可以直接在浏览器进行查看:
+
+![image-20210318101912798](img/image-20210318101912798.png)
+
+完整的调用链路如图所示:
+
+![image-20210318102114504](img/image-20210318102114504.png)
+
+调用链路简化图如图所示(**==每个节点都有spanId和parentId, spanId是节点的唯一标识==**):
+
+![image-20210318102212099](img/image-20210318102212099.png)
+
+
+
+---
+
+
+
+### 怎么玩?
+
+**==要跟踪哪个微服务节点就在哪个节点上进行配置就行了==**
+
+1. 添加依赖
+
+```xml
+  <!--包含了sleuth+zipkin-->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-zipkin</artifactId>
+        </dependency>
+```
+
+2. 编写配置文件
+
+```properties
+spring:
+  zipkin:
+    base-url: http://localhost:9411 #填写我们的zipkin的地址
+    sleuth:
+      sampler:
+      #采样率值介于0到1之间, 1则表示全部采样, 一般用0.5就够了
+      probability: 1
+```
+
+然后还要运行我们的zipkin才能够监控到我们的调用链路, 使用java -jar运行(详细请看上述教程)
+
+当我们进行服务调用的时候就可以在我们的zipkin中看到我们的调用链路了:
+
+![image-20210318113048040](img/image-20210318113048040.png)
+
+![image-20210318113117947](img/image-20210318113117947.png)
+
+![image-20210318113241976](img/image-20210318113241976.png)
+
+![image-20210318113415215](img/image-20210318113415215.png)
+
