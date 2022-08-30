@@ -512,7 +512,7 @@ eureka:
 
 zookeeper的服务节点时临时节点, 也就是说zookeeper默认不会对服务进行保留, 不像eureka有自我保护机制
 
-zookeeper代替eureka非常的简单, 只需要在pom中注册即可,注册多个zk用逗号隔开, 然后就可以通过RestTemplate来进行远程的调用
+zookeeper代替eureka非常的简单, 只需要在yml中注册即可,注册多个zk用逗号隔开, 然后就可以通过RestTemplate来进行远程的调用
 
 1. 消费者注册zk:
 
@@ -2345,4 +2345,3 @@ spring:
 ![image-20210318113241976](img/image-20210318113241976.png)
 
 ![image-20210318113415215](img/image-20210318113415215.png)
-
